@@ -8,7 +8,9 @@
       "Bash(powershell -Command \"& ''C:\\Program Files\\GitHub CLI\\gh.exe'' auth status\")",
       "Bash(git init:*)",
       "Bash(git add:*)",
-      "Bash(git commit -m \"$(cat <<''EOF''\nInitial commit: project documentation and gitignore\n\n- Add CLAUDE.md with AI assistant instructions\n- Add docs/SPEC.md with technical specification\n- Add .gitignore for Python, Node, and IDE files\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n)\")"
+      "Bash(git commit -m \"$(cat <<''EOF''\nInitial commit: project documentation and gitignore\n\n- Add CLAUDE.md with AI assistant instructions\n- Add docs/SPEC.md with technical specification\n- Add .gitignore for Python, Node, and IDE files\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(powershell -Command \"& ''C:\\Program Files\\GitHub CLI\\gh.exe'' repo create manus-clone --public --source=. --remote=origin --push --description ''Personal browser automation agent - chat interface for autonomous web browsing''\")",
+      "Bash(git commit -m \"$(cat <<''EOF''\nAdd project structure and configuration\n\n- Add requirements.txt with Python dependencies\n- Add .env.example with configuration template\n- Add config.py with pydantic settings\n- Add api/schemas.py with all Pydantic models\n- Create package structure for agent/browser, agent/core, api\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n)\")"
     ]
   }
 }
