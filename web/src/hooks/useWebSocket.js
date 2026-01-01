@@ -1,0 +1,173 @@
+import { useState, useEffect, useCallback, useRef } from 'react';
+
+const WS_URL = import.meta.env.DEV
+  ? 'ws://localhost:8000/ws'
+  : `ws://${window.location.host}/ws`;
+
+export function useWebSocket() {
+  const [isConnected, setIsConnected] = useState(false);
+  const [status, setStatus] = useState('idle');
+  const [plan, setPlan] = useState([]);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [screenshot, setScreenshot] = useState(null);
+  const [elements, setElements] = useState([]);
+  const [pageUrl, setPageUrl] = useState('');
+  const [pageTitle, setPageTitle] = useState('');
+  const [messages, setMessages] = useState([]);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+
+  const wsRef = useRef(null);
+  const reconnectTimeoutRef = useRef(null);
+
+  const addMessage = useCallback((type, content) => {
+    setMessages(prev => [...prev, { type, content, timestamp: Date.now() }]);
+  }, []);
+
+  const connect = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+
+    const ws = new WebSocket(WS_URL);
+
+    ws.onopen = () => {
+      setIsConnected(true);
+      setError(null);
+      console.log('WebSocket connected');
+    };
+
+    ws.onclose = () => {
+      setIsConnected(false);
+      console.log('WebSocket disconnected');
+
+      // Auto-reconnect after 3 seconds
+      reconnectTimeoutRef.current = setTimeout(() => {
+        connect();
+      }, 3000);
+    };
+
+    ws.onerror = (e) => {
+      console.error('WebSocket error:', e);
+      setError('Connection error');
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      handleMessage(data);
+    };
+
+    wsRef.current = ws;
+  }, []);
+
+  const handleMessage = useCallback((data) => {
+    const { type, ...payload } = data;
+
+    switch (type) {
+      case 'status':
+        setStatus(payload.status);
+        if (payload.status === 'idle') {
+          // Reset state when idle
+        }
+        break;
+
+      case 'plan':
+        setPlan(payload.steps);
+        setCurrentStep(0);
+        addMessage('plan', `Plan created with ${payload.steps.length} steps`);
+        break;
+
+      case 'step_start':
+        setCurrentStep(payload.step);
+        addMessage('step', `Step ${payload.step}: ${payload.description}`);
+        break;
+
+      case 'observation':
+        setScreenshot(payload.screenshot);
+        setElements(payload.elements || []);
+        setPageUrl(payload.url);
+        setPageTitle(payload.title);
+        break;
+
+      case 'action':
+        addMessage('action', `${payload.tool}(${JSON.stringify(payload.params)})`);
+        break;
+
+      case 'step_complete':
+        addMessage('step', `Step ${payload.step} complete`);
+        break;
+
+      case 'complete':
+        setResult(payload.result);
+        setStatus('complete');
+        addMessage('complete', payload.result);
+        break;
+
+      case 'error':
+        setError(payload.message);
+        addMessage('error', payload.message);
+        break;
+
+      case 'ask_user':
+        addMessage('question', payload.question);
+        setStatus('waiting_for_user');
+        break;
+
+      default:
+        console.log('Unknown message type:', type, payload);
+    }
+  }, [addMessage]);
+
+  const startTask = useCallback((task) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      setMessages([]);
+      setResult(null);
+      setError(null);
+      setPlan([]);
+      setScreenshot(null);
+      addMessage('task', task);
+      wsRef.current.send(JSON.stringify({ type: 'start_task', task }));
+    }
+  }, [addMessage]);
+
+  const cancelTask = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'cancel' }));
+    }
+  }, []);
+
+  const sendUserMessage = useCallback((content) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      addMessage('user', content);
+      wsRef.current.send(JSON.stringify({ type: 'user_message', content }));
+    }
+  }, [addMessage]);
+
+  useEffect(() => {
+    connect();
+
+    return () => {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, [connect]);
+
+  return {
+    isConnected,
+    status,
+    plan,
+    currentStep,
+    screenshot,
+    elements,
+    pageUrl,
+    pageTitle,
+    messages,
+    result,
+    error,
+    startTask,
+    cancelTask,
+    sendUserMessage,
+  };
+}
