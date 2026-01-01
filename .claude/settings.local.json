@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh auth:*)",
+      "Bash(git config:*)",
+      "Bash(cmd /c \"gh auth status\")",
+      "Bash(powershell -Command \"gh auth status\")",
+      "Bash(powershell -Command \"& ''C:\\Program Files\\GitHub CLI\\gh.exe'' auth status\")",
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nInitial commit: project documentation and gitignore\n\n- Add CLAUDE.md with AI assistant instructions\n- Add docs/SPEC.md with technical specification\n- Add .gitignore for Python, Node, and IDE files\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n)\")"
+    ]
+  }
+}
