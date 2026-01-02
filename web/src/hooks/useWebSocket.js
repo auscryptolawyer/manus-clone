@@ -26,6 +26,7 @@ export function useWebSocket() {
   const [isConnected, setIsConnected] = useState(false);
   const [status, setStatus] = useState('idle');
   const [plan, setPlan] = useState([]);
+  const [pendingPlan, setPendingPlan] = useState(null); // For confirmation
   const [currentStep, setCurrentStep] = useState(0);
   const [screenshot, setScreenshot] = useState(null);
   const [elements, setElements] = useState([]);
@@ -38,8 +39,8 @@ export function useWebSocket() {
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
 
-  const addMessage = useCallback((type, content) => {
-    setMessages(prev => [...prev, { type, content, timestamp: Date.now() }]);
+  const addMessage = useCallback((type, content, extra = {}) => {
+    setMessages(prev => [...prev, { type, content, timestamp: Date.now(), ...extra }]);
   }, []);
 
   const connect = useCallback(() => {
@@ -82,15 +83,28 @@ export function useWebSocket() {
     switch (type) {
       case 'status':
         setStatus(payload.status);
-        if (payload.status === 'idle') {
-          // Reset state when idle
-        }
+        break;
+
+      case 'plan_pending':
+        // Plan needs confirmation
+        setPendingPlan({
+          task: payload.task,
+          steps: payload.steps,
+          message: payload.message
+        });
+        addMessage('plan_pending', payload.message, { steps: payload.steps });
+        break;
+
+      case 'plan_rejected':
+        setPendingPlan(null);
+        addMessage('system', payload.message);
         break;
 
       case 'plan':
         setPlan(payload.steps);
         setCurrentStep(0);
-        addMessage('plan', `Plan created with ${payload.steps.length} steps`);
+        setPendingPlan(null);
+        addMessage('plan', `Executing plan with ${payload.steps.length} steps`);
         break;
 
       case 'step_start':
@@ -140,11 +154,25 @@ export function useWebSocket() {
       setResult(null);
       setError(null);
       setPlan([]);
+      setPendingPlan(null);
       setScreenshot(null);
       addMessage('task', task);
       wsRef.current.send(JSON.stringify({ type: 'start_task', task }));
     }
   }, [addMessage]);
+
+  const confirmPlan = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      addMessage('system', 'Plan confirmed. Starting execution...');
+      wsRef.current.send(JSON.stringify({ type: 'confirm_plan' }));
+    }
+  }, [addMessage]);
+
+  const rejectPlan = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'reject_plan' }));
+    }
+  }, []);
 
   const cancelTask = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -176,6 +204,7 @@ export function useWebSocket() {
     isConnected,
     status,
     plan,
+    pendingPlan,
     currentStep,
     screenshot,
     elements,
@@ -185,6 +214,8 @@ export function useWebSocket() {
     result,
     error,
     startTask,
+    confirmPlan,
+    rejectPlan,
     cancelTask,
     sendUserMessage,
   };

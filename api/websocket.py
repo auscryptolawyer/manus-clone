@@ -11,6 +11,7 @@ from anthropic import AsyncAnthropic
 from agent.browser.driver import BrowserDriver
 from agent.core.planner import TaskPlanner
 from agent.core.executor import AgentExecutor
+from api.schemas import TaskPlan
 from config import Settings
 
 
@@ -23,6 +24,11 @@ class ConnectionManager:
         self.browser: BrowserDriver | None = None
         self.executor: AgentExecutor | None = None
         self._cancel_requested = False
+        # Plan confirmation state
+        self._pending_task: str | None = None
+        self._pending_plan: TaskPlan | None = None
+        self._anthropic_client: AsyncAnthropic | None = None
+        self._settings: Settings | None = None
 
     async def connect(self, websocket: WebSocket) -> None:
         """Accept a new WebSocket connection."""
@@ -38,6 +44,8 @@ class ConnectionManager:
     def disconnect(self) -> None:
         """Handle WebSocket disconnection."""
         self.active_connection = None
+        self._pending_task = None
+        self._pending_plan = None
         logger.info("WebSocket disconnected")
 
     async def send_message(self, message: dict) -> None:
@@ -53,7 +61,11 @@ class ConnectionManager:
         msg_type = data.get("type")
 
         if msg_type == "start_task":
-            await self._start_task(data.get("task", ""), settings)
+            await self._create_plan(data.get("task", ""), settings)
+        elif msg_type == "confirm_plan":
+            await self._execute_confirmed_plan()
+        elif msg_type == "reject_plan":
+            await self._reject_plan()
         elif msg_type == "cancel":
             await self._cancel_task()
         elif msg_type == "user_message":
@@ -61,8 +73,8 @@ class ConnectionManager:
         else:
             logger.warning(f"Unknown message type: {msg_type}")
 
-    async def _start_task(self, task: str, settings: Settings) -> None:
-        """Start a new automation task."""
+    async def _create_plan(self, task: str, settings: Settings) -> None:
+        """Create a plan and wait for user confirmation."""
         if not task:
             await self.send_message({"type": "error", "message": "No task provided"})
             return
@@ -71,41 +83,83 @@ class ConnectionManager:
             await self.send_message({"type": "error", "message": "Task already running"})
             return
 
-        logger.info(f"Starting task: {task}")
+        logger.info(f"Creating plan for task: {task}")
+        self._settings = settings
+
+        try:
+            await self.send_message({"type": "status", "status": "planning"})
+
+            # Initialize Anthropic client
+            self._anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+
+            # Create plan
+            planner = TaskPlanner(self._anthropic_client)
+            plan = await planner.create_plan(task)
+
+            # Store pending task and plan
+            self._pending_task = task
+            self._pending_plan = plan
+
+            # Send plan for confirmation
+            step_descriptions = [s.description for s in plan.steps]
+            await self.send_message({
+                "type": "plan_pending",
+                "task": task,
+                "steps": step_descriptions,
+                "message": "Please review the plan and confirm to proceed."
+            })
+
+            await self.send_message({"type": "status", "status": "awaiting_confirmation"})
+
+        except Exception as e:
+            logger.error(f"Planning error: {e}")
+            await self.send_message({"type": "error", "message": str(e)})
+            await self.send_message({"type": "status", "status": "idle"})
+
+    async def _execute_confirmed_plan(self) -> None:
+        """Execute the confirmed plan."""
+        if not self._pending_task or not self._pending_plan:
+            await self.send_message({"type": "error", "message": "No pending plan to execute"})
+            return
+
+        task = self._pending_task
+        plan = self._pending_plan
+        self._pending_task = None
+        self._pending_plan = None
         self._cancel_requested = False
 
         # Run task in background
-        self.agent_task = asyncio.create_task(self._run_task(task, settings))
+        self.agent_task = asyncio.create_task(self._run_task(task, plan))
 
-    async def _run_task(self, task: str, settings: Settings) -> None:
+    async def _reject_plan(self) -> None:
+        """Reject the pending plan."""
+        self._pending_task = None
+        self._pending_plan = None
+        await self.send_message({"type": "status", "status": "idle"})
+        await self.send_message({"type": "plan_rejected", "message": "Plan rejected. You can try a different task."})
+
+    async def _run_task(self, task: str, plan: TaskPlan) -> None:
         """Execute the automation task."""
         try:
             await self.send_message({"type": "status", "status": "starting"})
 
-            # Initialize Anthropic client
-            client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-
-            # Launch browser
-            self.browser = BrowserDriver(headless=settings.browser_headless)
-            await self.browser.launch()
-            await self.send_message({"type": "status", "status": "browser_ready"})
-
-            # Create plan
-            await self.send_message({"type": "status", "status": "planning"})
-            planner = TaskPlanner(client)
-            plan = await planner.create_plan(task)
-
+            # Send confirmed plan
             step_descriptions = [s.description for s in plan.steps]
             await self.send_message({"type": "plan", "steps": step_descriptions})
+
+            # Launch browser
+            self.browser = BrowserDriver(headless=self._settings.browser_headless)
+            await self.browser.launch()
+            await self.send_message({"type": "status", "status": "browser_ready"})
 
             # Execute
             await self.send_message({"type": "status", "status": "executing"})
 
             self.executor = AgentExecutor(
-                anthropic_client=client,
+                anthropic_client=self._anthropic_client,
                 browser=self.browser,
-                max_steps=settings.max_steps_per_task,
-                step_timeout=settings.step_timeout_seconds,
+                max_steps=self._settings.max_steps_per_task,
+                step_timeout=self._settings.step_timeout_seconds,
             )
             self.executor.set_event_callback(self._agent_event_callback)
 
@@ -142,6 +196,13 @@ class ConnectionManager:
 
     async def _cancel_task(self) -> None:
         """Cancel the running task."""
+        # Also cancel pending plans
+        if self._pending_task:
+            self._pending_task = None
+            self._pending_plan = None
+            await self.send_message({"type": "status", "status": "idle"})
+            return
+
         self._cancel_requested = True
         if self.agent_task and not self.agent_task.done():
             self.agent_task.cancel()
