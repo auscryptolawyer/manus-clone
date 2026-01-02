@@ -1,8 +1,26 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 
-const WS_URL = import.meta.env.DEV
-  ? 'ws://localhost:8000/ws'
-  : `ws://${window.location.host}/ws`;
+// Determine WebSocket URL based on environment
+function getWebSocketUrl() {
+  const host = window.location.host;
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+
+  // GitHub Codespaces: frontend is on port 5173, backend on 8000
+  if (host.includes('app.github.dev')) {
+    const backendHost = host.replace('-5173.', '-8000.');
+    return `${protocol}//${backendHost}/ws`;
+  }
+
+  // Local development
+  if (import.meta.env.DEV) {
+    return 'ws://localhost:8000/ws';
+  }
+
+  // Production: same host
+  return `${protocol}//${host}/ws`;
+}
+
+const WS_URL = getWebSocketUrl();
 
 export function useWebSocket() {
   const [isConnected, setIsConnected] = useState(false);
