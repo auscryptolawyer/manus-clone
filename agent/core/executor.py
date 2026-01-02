@@ -43,23 +43,31 @@ EventCallback = Callable[[str, dict], Awaitable[None]]
 EXECUTOR_SYSTEM_PROMPT = """You are a browser automation agent. You control a web browser to complete tasks for the user.
 
 You will receive:
-1. The current task and plan
-2. A screenshot of the current page (in the next message)
-3. A list of interactive elements on the page, each with a numeric ID
-4. Visible text from the page
-5. History of recent actions
+1. A screenshot of the current page
+2. A list of interactive elements with numeric IDs
+3. Visible text from the page
+4. History of recent actions
 
-Based on this information, decide what action to take next using one of the available tools.
+IMPORTANT RULES:
+1. LOOK AT THE SCREENSHOT to understand the page visually
+2. NEVER repeat the same action more than twice - if it didn't work, try something different
+3. After navigating to a new page, use wait({"seconds": 2}) before interacting
+4. Look for search boxes, input fields, and buttons in the element list
+5. If you see a cookie consent banner or popup, dismiss it first
+6. When typing in search boxes, always press Enter or click the search button after
+7. If the page seems stuck or unresponsive, try navigating to a different URL
+8. When you have found the information requested, use the complete() tool with the answer
+9. If you cannot complete the task after trying multiple approaches, use fail() with explanation
 
-Key principles:
-- Always wait for pages to load before interacting
-- Use element IDs to click or type into specific elements
-- If an element isn't visible, try scrolling
-- If stuck, re-assess the situation and try a different approach
-- Ask the user if you encounter CAPTCHAs, login requirements, or ambiguous situations
-- Complete the task and provide a clear result when done
+ELEMENT SELECTION:
+- Elements are listed as [ID] type: "text" -> href
+- To click element 5, use: click({"element_id": 5})
+- To type in element 3, use: type({"element_id": 3, "text": "your text"})
+- Search inputs often have placeholder text like "Search..."
 
-Think step by step about what you see and what action will progress toward the goal."""
+STUCK DETECTION:
+- If your last 3+ actions were the same, YOU ARE STUCK
+- Try a completely different approach: different URL, different element, or ask_user for help"""
 
 
 class AgentExecutor:
@@ -99,6 +107,8 @@ class AgentExecutor:
         actions = BrowserActions(self.browser.page, timeout=self.step_timeout * 1000)
 
         step_count = 0
+        consecutive_same_action = 0
+        last_action_key = None
 
         while not self.state.completed and not self.state.failed:
             if step_count >= self.max_steps:
@@ -129,6 +139,22 @@ class AgentExecutor:
             tool_name = tool_call.get("name", "")
             tool_params = tool_call.get("params", {})
 
+            # Stuck detection: check if repeating the same action
+            current_action_key = f"{tool_name}:{tool_params}"
+            if current_action_key == last_action_key:
+                consecutive_same_action += 1
+                logger.warning(f"Repeated action {consecutive_same_action} times: {tool_name}")
+
+                if consecutive_same_action >= 3:
+                    logger.error("Agent is stuck - same action repeated 3+ times")
+                    self.state.failed = True
+                    self.state.error = "Agent got stuck repeating the same action. Please try a more specific task or different approach."
+                    await self._emit("error", {"message": self.state.error})
+                    break
+            else:
+                consecutive_same_action = 0
+                last_action_key = current_action_key
+
             await self._emit("action", {"tool": tool_name, "params": tool_params})
 
             # 3. Act
@@ -146,6 +172,9 @@ class AgentExecutor:
             # Keep only recent history to manage context
             if len(self.state.action_history) > 20:
                 self.state.action_history = self.state.action_history[-20:]
+
+            # Add small delay between actions to let pages settle
+            await actions.wait(0.5)
 
         logger.info(f"Task {'completed' if self.state.completed else 'failed'}")
         return self.state
