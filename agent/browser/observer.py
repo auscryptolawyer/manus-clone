@@ -51,84 +51,135 @@ class PageObserver:
             return ""
 
     async def _extract_interactive_elements(self) -> list[Element]:
-        """Extract interactive elements with numeric IDs."""
+        """Extract interactive elements with numeric IDs, prioritizing inputs."""
         js_code = """
         () => {
             const elements = [];
-            const interactiveSelectors = [
-                'a[href]',
-                'button',
-                'input:not([type="hidden"])',
-                'select',
-                'textarea',
-                '[role="button"]',
-                '[role="link"]',
-                '[role="checkbox"]',
-                '[role="radio"]',
-                '[role="tab"]',
-                '[onclick]',
-                '[tabindex]:not([tabindex="-1"])'
-            ];
-
             const seen = new Set();
 
-            interactiveSelectors.forEach(selector => {
-                document.querySelectorAll(selector).forEach(el => {
-                    // Skip hidden elements
-                    const style = window.getComputedStyle(el);
-                    if (style.display === 'none' || style.visibility === 'hidden') return;
-                    if (el.offsetWidth === 0 && el.offsetHeight === 0) return;
+            // Helper to check visibility
+            function isVisible(el) {
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden') return false;
+                if (el.offsetWidth === 0 && el.offsetHeight === 0) return false;
+                return true;
+            }
 
-                    // Skip duplicates
-                    if (seen.has(el)) return;
-                    seen.add(el);
+            // Helper to get element info
+            function getElementInfo(el, priority) {
+                const tagName = el.tagName.toLowerCase();
+                let type = el.type || el.getAttribute('role') || tagName;
+                const text = (el.textContent || el.innerText || '').trim().slice(0, 100);
+                const placeholder = el.placeholder || el.getAttribute('aria-label') || null;
+                const href = el.href || null;
+                const name = el.name || el.getAttribute('aria-label') || null;
 
-                    // Get element info
-                    const tagName = el.tagName.toLowerCase();
-                    const type = el.type || el.getAttribute('role') || tagName;
-                    const text = (el.textContent || el.innerText || '').trim().slice(0, 100);
-                    const placeholder = el.placeholder || null;
-                    const href = el.href || null;
-
-                    // Generate a unique selector
-                    let selector = '';
-                    if (el.id) {
-                        selector = '#' + CSS.escape(el.id);
-                    } else if (el.name) {
-                        selector = `${tagName}[name="${CSS.escape(el.name)}"]`;
+                // Better type detection
+                if (tagName === 'input') {
+                    const inputType = el.type?.toLowerCase() || 'text';
+                    if (inputType === 'search' ||
+                        placeholder?.toLowerCase().includes('search') ||
+                        name?.toLowerCase().includes('search') ||
+                        el.id?.toLowerCase().includes('search')) {
+                        type = 'search-input';
+                    } else if (inputType === 'text' || inputType === 'email' || inputType === 'tel') {
+                        type = 'text-input';
                     } else {
-                        // Use nth-child as fallback
-                        const parent = el.parentElement;
-                        if (parent) {
-                            const siblings = Array.from(parent.children);
-                            const index = siblings.indexOf(el) + 1;
-                            const parentSelector = parent.id
-                                ? '#' + CSS.escape(parent.id)
-                                : parent.tagName.toLowerCase();
-                            selector = `${parentSelector} > ${tagName}:nth-child(${index})`;
-                        } else {
-                            selector = tagName;
-                        }
+                        type = inputType + '-input';
                     }
+                } else if (tagName === 'textarea') {
+                    type = 'textarea';
+                } else if (tagName === 'button' || el.getAttribute('role') === 'button') {
+                    type = 'button';
+                } else if (tagName === 'a') {
+                    type = 'link';
+                } else if (tagName === 'select') {
+                    type = 'dropdown';
+                }
 
-                    elements.push({
-                        type: type,
-                        text: text,
-                        placeholder: placeholder,
-                        href: href,
-                        selector: selector
-                    });
-                });
+                // Generate selector
+                let selector = '';
+                if (el.id) {
+                    selector = '#' + CSS.escape(el.id);
+                } else if (el.name) {
+                    selector = `${tagName}[name="${CSS.escape(el.name)}"]`;
+                } else {
+                    const parent = el.parentElement;
+                    if (parent) {
+                        const siblings = Array.from(parent.children).filter(s => s.tagName === el.tagName);
+                        const index = siblings.indexOf(el) + 1;
+                        const parentSelector = parent.id
+                            ? '#' + CSS.escape(parent.id)
+                            : parent.tagName.toLowerCase();
+                        selector = `${parentSelector} > ${tagName}:nth-of-type(${index})`;
+                    } else {
+                        selector = tagName;
+                    }
+                }
+
+                return {
+                    type,
+                    text,
+                    placeholder,
+                    href,
+                    selector,
+                    priority
+                };
+            }
+
+            // Priority 1: Search inputs (most important for search tasks)
+            document.querySelectorAll('input[type="search"], input[name*="search" i], input[placeholder*="search" i], input[aria-label*="search" i], input#search, input.search').forEach(el => {
+                if (!isVisible(el) || seen.has(el)) return;
+                seen.add(el);
+                elements.push(getElementInfo(el, 1));
             });
+
+            // Priority 2: Other text inputs
+            document.querySelectorAll('input[type="text"], input:not([type]), textarea').forEach(el => {
+                if (!isVisible(el) || seen.has(el)) return;
+                seen.add(el);
+                elements.push(getElementInfo(el, 2));
+            });
+
+            // Priority 3: Buttons (especially submit/search buttons)
+            document.querySelectorAll('button, input[type="submit"], [role="button"]').forEach(el => {
+                if (!isVisible(el) || seen.has(el)) return;
+                seen.add(el);
+                const info = getElementInfo(el, 3);
+                // Boost search-related buttons
+                if (info.text?.toLowerCase().includes('search') ||
+                    info.text?.toLowerCase().includes('go') ||
+                    info.text?.toLowerCase().includes('find')) {
+                    info.priority = 1.5;
+                }
+                elements.push(info);
+            });
+
+            // Priority 4: Links
+            document.querySelectorAll('a[href]').forEach(el => {
+                if (!isVisible(el) || seen.has(el)) return;
+                seen.add(el);
+                elements.push(getElementInfo(el, 4));
+            });
+
+            // Priority 5: Other interactive elements
+            document.querySelectorAll('select, [role="checkbox"], [role="radio"], [role="tab"], [onclick], [tabindex]:not([tabindex="-1"])').forEach(el => {
+                if (!isVisible(el) || seen.has(el)) return;
+                seen.add(el);
+                elements.push(getElementInfo(el, 5));
+            });
+
+            // Sort by priority
+            elements.sort((a, b) => a.priority - b.priority);
 
             return elements;
         }
-        """;
+        """
 
         try:
             raw_elements = await self.page.evaluate(js_code)
 
-            # Assign numeric IDs
+            # Assign numeric IDs (now sorted by priority)
             elements = []
             for i, el in enumerate(raw_elements, start=1):
                 elements.append(Element(
